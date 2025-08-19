@@ -6,6 +6,9 @@ use App\Exports\WaInvitationTemplateExport;
 use Illuminate\Http\Request;
 use Maatwebsite\Excel\Facades\Excel;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Collection;
+use Maatwebsite\Excel\Concerns\ToCollection;
+use Maatwebsite\Excel\Concerns\WithChunkReading;
 
 
 class WaInvitationController extends Controller
@@ -35,68 +38,121 @@ class WaInvitationController extends Controller
 
     public function sendWaFromExcel(Request $request)
     {
-
         $request->validate([
             'file_path' => 'required'
         ]);
 
         $filePath = storage_path('app/private/' . $request->file_path);
 
-
-
         if (!file_exists($filePath)) {
             return back()->with('failed', 'File tidak ditemukan!');
         }
 
-        $rows = Excel::toArray([], $filePath)[0];
-
+        // Buat satu file log per proses
         $logFileName = 'wa_invitation_log_' . date('Ymd_His') . '.txt';
-        $success = [];
-        $failed = [];
 
-        foreach ($rows as $index => $row) {
-            if ($index === 0) continue; // skip header
+        // Gunakan import anonim: proses per CHUNK (hemat memori) + HTTP pool (paralel terkontrol)
+        $import = new class($this, $logFileName) implements ToCollection, WithChunkReading {
+            private WaInvitationController $ctrl;
+            private string $logFile;
+            private bool $skippedHeader = false;
+            /** @var array<string,array{name:string}> */
+            private array $meta = [];
 
-            $namaTamu = $row[0] ?? null;
-            $mobilePhone = $row[1] ?? null;
+            public array $success = [];
+            public array $failed = [];
 
-            if (!$namaTamu || !$mobilePhone) {
-                $failed[] = ['row' => $index + 1, 'reason' => 'Data kosong'];
-                continue;
+            public function __construct(WaInvitationController $ctrl, string $logFile)
+            {
+                $this->ctrl = $ctrl;
+                $this->logFile = $logFile;
             }
 
+            public function collection(Collection $rows)
+            {
+                // Lewati header hanya sekali (baris pertama file)
+                if (!$this->skippedHeader) {
+                    $rows = $rows->slice(1)->values();
+                    $this->skippedHeader = true;
+                }
 
-            $undangan = $this->generateInvitationText($namaTamu);
+                if ($rows->isEmpty()) {
+                    return;
+                }
 
-            // Kirim ke API WhatsApp Gateway (Waha)
-            $response = Http::withHeaders([
-                'Content-Type' => 'application/json',
-                'Accept' => 'application/json',
-                'X-Api-Key' => '••••••', // Ganti API Key aslimu
-            ])->post('http://localhost:3000/api/sendText', [
-                'chatId' => $mobilePhone . '@c.us',
-                'text' => $undangan,
-                'session' => 'default',
-                'linkPreview' => true,
-                'linkPreviewHighQuality' => false
-            ]);
+                // Kirim paralel per 10 data agar tidak membebani server/API
+                foreach ($rows->chunk(10) as $batch) {
+                    $this->meta = [];
 
-            if ($response->successful()) {
-                $success[] = $mobilePhone;
-                $this->logToFile($namaTamu, $mobilePhone, $response->json(), $logFileName);
-            } else {
-                $failed[] = ['row' => $index + 1, 'reason' => $response->body()];
+                    $responses = Http::pool(function ($pool) use ($batch) {
+                        foreach ($batch as $row) {
+                            $namaTamu = $row[0] ?? null;
+                            $mobilePhone = $row[1] ?? null;
+
+                            if (!$namaTamu || !$mobilePhone) {
+                                $this->failed[] = ['row' => null, 'reason' => 'Data kosong'];
+                                continue;
+                            }
+
+                            $this->meta[(string) $mobilePhone] = ['name' => (string) $namaTamu];
+
+                            $text = $this->ctrl->generateInvitationText($namaTamu);
+                            $pool->as((string) $mobilePhone)
+                                ->withHeaders([
+                                    'Content-Type' => 'application/json',
+                                    'Accept' => 'application/json',
+                                    'X-Api-Key' => env('WAHA_API_KEY', '')
+                                ])
+                                ->post('http://localhost:3000/api/sendText', [
+                                    'chatId' => $mobilePhone . '@c.us',
+                                    'text' => $text,
+                                    'session' => 'default',
+                                    'linkPreview' => true,
+                                    'linkPreviewHighQuality' => false,
+                                ]);
+                        }
+                    });
+
+                    // Evaluasi semua response dalam batch
+                    foreach ($responses as $mobile => $response) {
+                        if (!is_string($mobile)) {
+                            continue; // entri kosong yang di-skip di atas
+                        }
+
+                        $namaTamu = $this->meta[$mobile]['name'] ?? '-';
+
+                        if ($response && method_exists($response, 'successful') && $response->successful()) {
+                            $this->success[] = $mobile;
+                            $this->ctrl->logToFile($namaTamu, $mobile, $response->json(), $this->logFile);
+                        } else {
+                            $body = method_exists($response, 'body') ? $response->body() : 'Unknown error';
+                            $this->failed[] = ['row' => null, 'reason' => $body];
+                        }
+                    }
+                }
             }
-        }
+
+            public function chunkSize(): int
+            {
+                return 200; // Ubah sesuai kebutuhan
+            }
+        };
+
+        // Jalankan import streaming; Maatwebsite Excel akan memanggil collection() per chunk
+        Excel::import($import, $filePath);
 
         // Hapus file excel temp setelah selesai kirim
         @unlink($filePath);
+
+        // Ringkasan hasil
+        $success = $import->success;
+        $failed = $import->failed;
 
         return redirect('/')->with(compact('success', 'failed'));
     }
 
     // Fungsi log ke file per batch kirim
-    private function logToFile($namaTamu, $mobilePhone, $responseJson, $logFileName)
+    public function logToFile($namaTamu, $mobilePhone, $responseJson, $logFileName)
     {
         $messageId = $responseJson['id']['id'] ?? '-';
         $chatId = $responseJson['id']['remote'] ?? '-';
@@ -135,7 +191,6 @@ class WaInvitationController extends Controller
     {
         $request->validate([
             'nama_tamu' => 'required',
-            'mobile_phone' => 'required'
         ]);
 
         $namaTamu = $request->input('nama_tamu');
@@ -145,12 +200,17 @@ class WaInvitationController extends Controller
 
         // WhatsApp link
         $waText = urlencode($textUndangan);
-        $waLink = "https://wa.me/{$mobilePhone}?text={$waText}";
+        if(empty($mobilePhone)){
+            $waLink = "https://wa.me?text={$waText}";
+        }else{
+            $waLink = "https://wa.me/{$mobilePhone}?text={$waText}";
+        }
+
 
         return view('manual_result', compact('namaTamu', 'mobilePhone', 'textUndangan', 'waLink'));
     }
 
-    private function generateInvitationText($namaTamu)
+    public function generateInvitationText($namaTamu)
     {
         $linkUndangan = "https://event.digitainvite.id/miftah-wahyu/?to=" . urlencode($namaTamu);
 

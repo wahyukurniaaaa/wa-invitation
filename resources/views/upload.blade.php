@@ -2,23 +2,24 @@
 <html lang="id">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Upload Excel WA Invitation</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 </head>
 <body class="bg-light">
 
-<div class="container py-5">
+<div class="container py-5 px-3 px-md-0">
     <div class="row justify-content-center">
-        <div class="col-lg-6">
+        <div class="col-12 col-lg-6">
 
             <div class="card shadow-sm">
                 <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
                     <h4 class="mb-0">Upload Daftar Undangan WhatsApp (Excel)</h4>
-                    <div class="d-flex flex-row gap-2 flex-wrap">
-                        <a href="{{ url('download-template') }}" class="btn btn-light btn-sm">
+                    <div class="d-flex flex-column flex-sm-row gap-2">
+                        <a href="{{ url('download-template') }}" class="btn btn-light btn-sm w-100 w-sm-auto">
                             <i class="bi bi-file-earmark-excel"></i> Download Template
                         </a>
-                        <a href="{{ url('manual-invitation') }}" class="btn btn-outline-warning btn-sm">
+                        <a href="{{ url('manual-invitation') }}" class="btn btn-outline-warning btn-sm w-100 w-sm-auto">
                             <i class="bi bi-person-plus"></i> Kirim Manual
                         </a>
                     </div>
@@ -32,7 +33,7 @@
                             <input type="file" class="form-control" name="excel" id="excel" accept=".xlsx,.xls"
                                    required>
                         </div>
-                        <button type="submit" class="btn btn-success">
+                        <button type="submit" class="btn btn-success w-100 w-md-auto">
                             <i class="bi bi-upload"></i> Upload & Lihat Data
                         </button>
                     </form>
