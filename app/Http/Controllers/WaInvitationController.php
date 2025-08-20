@@ -94,6 +94,9 @@ class WaInvitationController extends Controller
                                 continue;
                             }
 
+                            $mobilePhone = trim((string) $mobilePhone);
+                            $mobilePhone = preg_replace('/[\x{202A}\x{202C}]/u', '', $mobilePhone);
+
                             $this->meta[(string) $mobilePhone] = ['name' => (string) $namaTamu];
 
                             $text = $this->ctrl->generateInvitationText($namaTamu);
